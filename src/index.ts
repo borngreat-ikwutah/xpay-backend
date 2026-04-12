@@ -1,8 +1,6 @@
 import { Hono } from "hono";
-import authRoutes from "./auth/auth.routes";
-import { claimRefund, initSession, tip } from "./controllers/agent.controller";
-import { jwtGuard } from "./middleware/jwt.middleware";
-import { x402Guard } from "./middleware/x402.middleware";
+import authRoutes from "./routes/auth.routes";
+import agentRoutes from "./routes/agent.routes";
 
 const app = new Hono();
 
@@ -46,13 +44,6 @@ app.route("/user", userRoutes);
 /**
  * Protected agent routes
  */
-const agentRoutes = new Hono();
-
-agentRoutes.use("*", jwtGuard);
-agentRoutes.post("/tip", x402Guard, tip);
-agentRoutes.post("/init-session", initSession);
-agentRoutes.post("/claim-refund", x402Guard, claimRefund);
-
 app.route("/agent", agentRoutes);
 
 export default app;

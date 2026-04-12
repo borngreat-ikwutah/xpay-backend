@@ -1,28 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { Buffer } from "node:buffer";
 import { Keypair } from "@stellar/stellar-sdk";
 import { supabase } from "../lib/supabase";
-import {
-  Client as XpayGuardClient,
-  networks,
-  rpc,
-} from "../lib/xpay-guard/src";
+import { Client as XpayGuardClient, networks } from "../lib/xpay-guard/src";
 
 type MerchantWhitelistRow = {
-  id?: string | number;
-  wallet_address?: string | null;
-  merchant_address?: string | null;
-  address?: string | null;
   active?: boolean | null;
 };
 
 type TransactionInsert = {
   tx_hash?: string | null;
-  transaction_hash?: string | null;
   status: string;
   type?: string | null;
   from_address?: string | null;
-  to_address?: string | null;
   merchant_address?: string | null;
   amount?: string | number | null;
   token?: string | null;
@@ -48,6 +37,7 @@ export type ProcessTipResult = {
   contractId: string;
   merchantAddress: string;
   amount: string;
+  submissionHash: string | null;
   result?: unknown;
 };
 
@@ -69,6 +59,7 @@ export type InitSessionResult = {
   limit: string;
   period: number;
   deadline: number;
+  submissionHash: string | null;
   result?: unknown;
 };
 
@@ -82,6 +73,7 @@ export type ClaimRefundResult = {
   contractId: string;
   userAddress: string;
   txHash: string;
+  submissionHash: string | null;
   result?: unknown;
 };
 
@@ -120,7 +112,7 @@ function normalizeAddress(address: string): string {
 async function isMerchantWhitelisted(merchantAddress: string) {
   const { data, error } = await supabase
     .from("merchant_whitelist")
-    .select("*")
+    .select("active")
     .eq("merchant_address", merchantAddress)
     .maybeSingle<MerchantWhitelistRow>();
 
@@ -168,13 +160,8 @@ async function getStellarInvocationClient() {
   const agentPublicKey = agentKeypair.publicKey();
 
   const signTransaction = async (xdr: string) => {
-    const tx = rpc.TransactionBuilder.fromXDR(
-      xdr,
-      networks.testnet.networkPassphrase,
-    );
-    tx.sign(agentKeypair);
     return {
-      signedTxXdr: tx.toXDR(),
+      signedTxXdr: xdr,
       signerAddress: agentPublicKey,
     };
   };
@@ -217,7 +204,6 @@ async function submitAssembledTransaction<T>(assembled: {
 }
 
 async function invokePayService(params: {
-  contractId: string;
   amount: string;
   merchantAddress: string;
   memo?: string;
@@ -237,7 +223,6 @@ async function invokePayService(params: {
     {
       fee: "auto",
       timeoutInSeconds: 60,
-      simulate: true,
     },
   );
 
@@ -280,7 +265,6 @@ async function invokeInitSession(params: {
     {
       fee: "auto",
       timeoutInSeconds: 60,
-      simulate: true,
     },
   );
 
@@ -310,7 +294,6 @@ async function invokeClaimRefund(params: {
     {
       fee: "auto",
       timeoutInSeconds: 60,
-      simulate: true,
     },
   );
 
@@ -357,7 +340,6 @@ export async function processTip(
   }
 
   const invocation = await invokePayService({
-    contractId: DEFAULT_CONTRACT_ID,
     amount,
     merchantAddress,
     memo: input.memo,
@@ -388,6 +370,7 @@ export async function processTip(
     contractId: invocation.contractId,
     merchantAddress,
     amount,
+    submissionHash: invocation.hash,
     result: invocation.result ?? invocation,
   };
 }
@@ -448,6 +431,7 @@ export async function initSession(
     limit,
     period: input.period,
     deadline: input.deadline,
+    submissionHash: invocation.hash,
     result: invocation.result ?? invocation,
   };
 }
@@ -481,6 +465,7 @@ export async function claimRefund(
     contractId: invocation.contractId,
     userAddress,
     txHash,
+    submissionHash: invocation.hash,
     result: invocation.result ?? invocation,
   };
 }
@@ -489,7 +474,7 @@ export function x402Required(message = "This endpoint requires payment") {
   return {
     success: false as const,
     status: 402 as const,
-    error: "Payment Required",
+    error: "Payment Required" as const,
     message,
   };
 }
