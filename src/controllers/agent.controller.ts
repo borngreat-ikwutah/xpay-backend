@@ -116,7 +116,7 @@ export const tip = async (c: Context) => {
   }
 
   try {
-    const result = await processTip({
+    const result = await processTip(c.env, {
       merchantAddress: body.merchantAddress,
       amount: body.amount,
       txHash: body.txHash,
@@ -169,7 +169,7 @@ export const initSession = async (c: Context) => {
   }
 
   try {
-    const result = await initSessionService({
+    const result = await initSessionService(c.env, {
       userAddress,
       token: body.token,
       escrowAmount: body.escrowAmount,
@@ -204,7 +204,7 @@ export const claimRefund = async (c: Context) => {
   }
 
   try {
-    const result = await claimRefundService({
+    const result = await claimRefundService(c.env, {
       userAddress,
       txHash: body.txHash,
     });

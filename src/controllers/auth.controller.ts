@@ -1,9 +1,8 @@
-// @ts-nocheck
-
 import { Context } from "hono";
 import { sign } from "hono/jwt";
 import { randomUUID } from "node:crypto";
-import { supabase } from "../lib/supabase";
+import { getSupabase } from "../lib/supabase";
+import { Bindings } from "../types/env";
 
 type VerifyBody = {
   address?: string;
@@ -26,7 +25,7 @@ const NONCE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 function authError(
   code: AuthErrorCode,
   message: string,
-  status: number,
+  status: any,
   details?: unknown,
 ) {
   return {
@@ -40,12 +39,12 @@ function authError(
   };
 }
 
-function buildSiwsMessage(address: string, nonce: string) {
+function buildSiwsMessage(address: string, nonce: string, env: Bindings) {
   return `xPay wants you to sign in with your Stellar account:
 ${address}
 
 Nonce: ${nonce}
-URI: ${process.env.APP_URL ?? "http://localhost:3000"}
+URI: ${env.APP_URL ?? "http://localhost:3000"}
 Version: 1
 Chain ID: testnet`;
 }
@@ -74,8 +73,9 @@ async function verifyFreighterSignature(
   address: string,
   signedMessage: string,
   nonce: string,
+  env: Bindings,
 ) {
-  const message = buildSiwsMessage(address, nonce);
+  const message = buildSiwsMessage(address, nonce, env);
   const verifyFn = await resolveVerifyMessageSignature();
   const result = await verifyFn(address, signedMessage, message);
   return Boolean(result);
@@ -105,6 +105,7 @@ export const getNonce = async (c: Context) => {
   const nonce = randomUUID();
   const expires_at = new Date(Date.now() + NONCE_TTL_MS).toISOString();
 
+  const supabase = getSupabase(c.env);
   const { error } = await supabase.from("auth_nonces").upsert(
     {
       address,
@@ -129,7 +130,7 @@ export const getNonce = async (c: Context) => {
     success: true,
     nonce,
     expires_at,
-    message: buildSiwsMessage(address, nonce),
+    message: buildSiwsMessage(address, nonce, c.env),
   });
 };
 
@@ -173,6 +174,7 @@ export const verifySignature = async (c: Context) => {
     return c.json(err.body, err.status);
   }
 
+  const supabase = getSupabase(c.env);
   const { data: storedNonce, error: fetchError } = await supabase
     .from("auth_nonces")
     .select("address, nonce, expires_at")
@@ -210,7 +212,12 @@ export const verifySignature = async (c: Context) => {
 
   let isValid = false;
   try {
-    isValid = await verifyFreighterSignature(address, signedMessage, nonce);
+    isValid = await verifyFreighterSignature(
+      address,
+      signedMessage,
+      nonce,
+      c.env,
+    );
   } catch (error) {
     console.error("Signature verification error:", error);
     const err = authError(

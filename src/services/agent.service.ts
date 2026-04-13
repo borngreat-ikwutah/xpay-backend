@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Keypair } from "@stellar/stellar-sdk";
-import { supabase } from "../lib/supabase";
+import { getSupabase } from "../lib/supabase";
 import { Client as XpayGuardClient, networks } from "../lib/xpay-guard/src";
+import { Bindings } from "../types/env";
 
 type MerchantWhitelistRow = {
   active?: boolean | null;
@@ -165,7 +166,8 @@ function normalizeToken(token?: string): string {
   return value.toUpperCase();
 }
 
-async function isMerchantWhitelisted(merchantAddress: string) {
+async function isMerchantWhitelisted(env: Bindings, merchantAddress: string) {
+  const supabase = getSupabase(env);
   const { data, error } = await supabase
     .from("merchant_whitelist")
     .select("active, merchant_name")
@@ -189,7 +191,8 @@ async function isMerchantWhitelisted(merchantAddress: string) {
   };
 }
 
-async function logTransaction(entry: TransactionInsert) {
+async function logTransaction(env: Bindings, entry: TransactionInsert) {
+  const supabase = getSupabase(env);
   const payload = {
     ...entry,
     created_at: entry.created_at ?? new Date().toISOString(),
@@ -204,11 +207,15 @@ async function logTransaction(entry: TransactionInsert) {
   }
 }
 
-async function incrementAgentSpend(params: {
-  userAddress: string;
-  amount: string;
-  token: string;
-}) {
+async function incrementAgentSpend(
+  env: Bindings,
+  params: {
+    userAddress: string;
+    amount: string;
+    token: string;
+  },
+) {
+  const supabase = getSupabase(env);
   const spendColumn = params.token === "USDC" ? "spent_usdc" : "spent_xlm";
 
   const { data, error: fetchError } = await supabase
@@ -243,13 +250,13 @@ async function incrementAgentSpend(params: {
   }
 }
 
-async function getStellarInvocationClient() {
+async function getStellarInvocationClient(env: Bindings) {
   const contractId =
-    process.env.XPAY_GUARD_CONTRACT_ID ??
-    networks.testnet.contractId ??
+    env.XPAY_GUARD_CONTRACT_ID ||
+    networks.testnet.contractId ||
     DEFAULT_CONTRACT_ID;
 
-  const agentSecretKey = process.env.AGENT_SECRET_KEY;
+  const agentSecretKey = env.AGENT_SECRET_KEY;
   if (!agentSecretKey) {
     throw new XPayError(
       "SERVER_MISCONFIGURED",
@@ -322,15 +329,18 @@ async function submitAssembledTransaction<T>(
   }
 }
 
-async function invokePayService(params: {
-  amount: string;
-  merchantAddress: string;
-  memo?: string;
-  txHash: string;
-  userAddress: string;
-}) {
+async function invokePayService(
+  env: Bindings,
+  params: {
+    amount: string;
+    merchantAddress: string;
+    memo?: string;
+    txHash: string;
+    userAddress: string;
+  },
+) {
   const { client, contractId, agentPublicKey } =
-    await getStellarInvocationClient();
+    await getStellarInvocationClient(env);
 
   const assembled = (await client.pay_service(
     {
@@ -359,16 +369,19 @@ async function invokePayService(params: {
   };
 }
 
-async function invokeInitSession(params: {
-  userAddress: string;
-  token: string;
-  escrowAmount: string;
-  limit: string;
-  period: number;
-  deadline: number;
-}) {
+async function invokeInitSession(
+  env: Bindings,
+  params: {
+    userAddress: string;
+    token: string;
+    escrowAmount: string;
+    limit: string;
+    period: number;
+    deadline: number;
+  },
+) {
   const { client, contractId, agentPublicKey } =
-    await getStellarInvocationClient();
+    await getStellarInvocationClient(env);
 
   const assembled = (await client.init_session(
     {
@@ -396,12 +409,15 @@ async function invokeInitSession(params: {
   };
 }
 
-async function invokeClaimRefund(params: {
-  userAddress: string;
-  txHash: string;
-}) {
+async function invokeClaimRefund(
+  env: Bindings,
+  params: {
+    userAddress: string;
+    txHash: string;
+  },
+) {
   const { client, contractId, agentPublicKey } =
-    await getStellarInvocationClient();
+    await getStellarInvocationClient(env);
 
   const assembled = (await client.claim_refund(
     {
@@ -457,6 +473,7 @@ function mapErrorToXPayError(error: unknown): XPayError {
 }
 
 export async function processTip(
+  env: Bindings,
   input: ProcessTipInput,
 ): Promise<ProcessTipResult> {
   try {
@@ -468,11 +485,13 @@ export async function processTip(
       ? normalizeAddress(input.userAddress)
       : "";
 
-    const { whitelisted, merchantName } =
-      await isMerchantWhitelisted(merchantAddress);
+    const { whitelisted, merchantName } = await isMerchantWhitelisted(
+      env,
+      merchantAddress,
+    );
 
     if (!whitelisted) {
-      await logTransaction({
+      await logTransaction(env, {
         tx_hash: txHash,
         status: "rejected",
         type: "tip",
@@ -494,7 +513,7 @@ export async function processTip(
       );
     }
 
-    const invocation = await invokePayService({
+    const invocation = await invokePayService(env, {
       amount,
       merchantAddress,
       memo: input.memo,
@@ -502,7 +521,7 @@ export async function processTip(
       userAddress: userAddress || merchantAddress,
     });
 
-    await logTransaction({
+    await logTransaction(env, {
       tx_hash: txHash,
       status: "success",
       type: "tip",
@@ -520,7 +539,7 @@ export async function processTip(
     });
 
     if (userAddress) {
-      await incrementAgentSpend({
+      await incrementAgentSpend(env, {
         userAddress,
         amount,
         token,
@@ -549,7 +568,7 @@ export async function processTip(
       const txHash = input.txHash?.trim() || "failed-" + randomUUID();
       const token = normalizeToken(input.token);
 
-      await logTransaction({
+      await logTransaction(env, {
         tx_hash: txHash,
         status: "failed",
         type: "tip",
@@ -575,6 +594,7 @@ export async function processTip(
 }
 
 export async function initSession(
+  env: Bindings,
   input: InitSessionInput,
 ): Promise<InitSessionResult> {
   try {
@@ -599,7 +619,7 @@ export async function initSession(
       );
     }
 
-    const invocation = await invokeInitSession({
+    const invocation = await invokeInitSession(env, {
       userAddress,
       token,
       escrowAmount,
@@ -608,7 +628,7 @@ export async function initSession(
       deadline: input.deadline,
     });
 
-    await logTransaction({
+    await logTransaction(env, {
       tx_hash: randomUUID(),
       status: "success",
       type: "init_session",
@@ -643,18 +663,19 @@ export async function initSession(
 }
 
 export async function claimRefund(
+  env: Bindings,
   input: ClaimRefundInput,
 ): Promise<ClaimRefundResult> {
   try {
     const userAddress = normalizeAddress(input.userAddress);
     const txHash = input.txHash?.trim() || randomUUID();
 
-    const invocation = await invokeClaimRefund({
+    const invocation = await invokeClaimRefund(env, {
       userAddress,
       txHash,
     });
 
-    await logTransaction({
+    await logTransaction(env, {
       tx_hash: txHash,
       status: "success",
       type: "claim_refund",
