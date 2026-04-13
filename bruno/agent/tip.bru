@@ -1,0 +1,31 @@
+meta {
+  name: Tip
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/agent/tip
+  body: none
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Accept: application/json
+  Authorization: Bearer {{jwt}}
+}
+
+body:json {
+  {
+    "merchantAddress": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    "amount": "1.5",
+    "txHash": "REPLACE_WITH_TX_HASH",
+    "memo": "xPay tip",
+    "token": "XLM"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}

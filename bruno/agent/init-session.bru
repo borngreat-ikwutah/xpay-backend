@@ -1,0 +1,31 @@
+meta {
+  name: Init Session
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/agent/init-session
+  body: none
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Accept: application/json
+  Authorization: Bearer {{jwt}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+body:json {
+  {
+    "token": "XLM",
+    "escrowAmount": "10",
+    "limit": "100",
+    "period": 3600,
+    "deadline": 9999999999
+  }
+}

@@ -1,0 +1,27 @@
+meta {
+  name: Claim Refund
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/agent/claim-refund
+  body: none
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Accept: application/json
+  Authorization: Bearer {{jwt}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+body:json {
+  {
+    "txHash": "REPLACE_WITH_TX_HASH"
+  }
+}

@@ -5,6 +5,14 @@ import { Client as XpayGuardClient, networks } from "../lib/xpay-guard/src";
 
 type MerchantWhitelistRow = {
   active?: boolean | null;
+  merchant_name?: string | null;
+};
+
+type AgentRow = {
+  id?: string | number | null;
+  wallet_address?: string | null;
+  spent_xlm?: string | number | null;
+  spent_usdc?: string | number | null;
 };
 
 type TransactionInsert = {
@@ -13,6 +21,7 @@ type TransactionInsert = {
   type?: string | null;
   from_address?: string | null;
   merchant_address?: string | null;
+  merchant_name?: string | null;
   amount?: string | number | null;
   token?: string | null;
   contract_id?: string | null;
@@ -21,6 +30,31 @@ type TransactionInsert = {
   created_at?: string;
   updated_at?: string;
 };
+
+export type XPayErrorCode =
+  | "MERCHANT_NOT_WHITELISTED"
+  | "LIMIT_EXCEEDED"
+  | "INSUFFICIENT_ESCROW"
+  | "INVALID_SIGNATURE"
+  | "SERVER_MISCONFIGURED"
+  | "DB_ERROR"
+  | "CONTRACT_ERROR"
+  | "PAYMENT_REQUIRED"
+  | "INVALID_ADDRESS"
+  | "INVALID_AMOUNT"
+  | "INVALID_TOKEN";
+
+export class XPayError extends Error {
+  constructor(
+    public code: XPayErrorCode,
+    message: string,
+    public status: number = 400,
+    public details?: unknown,
+  ) {
+    super(message);
+    this.name = "XPayError";
+  }
+}
 
 export type ProcessTipInput = {
   merchantAddress: string;
@@ -32,11 +66,13 @@ export type ProcessTipInput = {
 };
 
 export type ProcessTipResult = {
-  success: boolean;
+  success: true;
   txHash: string;
   contractId: string;
   merchantAddress: string;
+  merchantName: string | null;
   amount: string;
+  token: string;
   submissionHash: string | null;
   result?: unknown;
 };
@@ -51,7 +87,7 @@ export type InitSessionInput = {
 };
 
 export type InitSessionResult = {
-  success: boolean;
+  success: true;
   contractId: string;
   userAddress: string;
   token: string;
@@ -69,7 +105,7 @@ export type ClaimRefundInput = {
 };
 
 export type ClaimRefundResult = {
-  success: boolean;
+  success: true;
   contractId: string;
   userAddress: string;
   txHash: string;
@@ -82,6 +118,12 @@ export type PaymentRequiredResult = {
   status: 402;
   error: string;
   message: string;
+  required?: {
+    txHash?: boolean;
+    amount?: boolean;
+    merchantAddress?: boolean;
+  };
+  details?: unknown;
 };
 
 const DEFAULT_CONTRACT_ID =
@@ -91,11 +133,17 @@ const DEFAULT_TOKEN = "XLM";
 
 function normalizeAmount(amount: string | number): string {
   const value = typeof amount === "number" ? amount.toString() : amount.trim();
-  if (!value) throw new Error("Amount is required");
+  if (!value) {
+    throw new XPayError("INVALID_AMOUNT", "Amount is required", 400);
+  }
 
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error("Amount must be a positive number");
+    throw new XPayError(
+      "INVALID_AMOUNT",
+      "Amount must be a positive number",
+      400,
+    );
   }
 
   return parsed.toString();
@@ -104,26 +152,41 @@ function normalizeAmount(amount: string | number): string {
 function normalizeAddress(address: string): string {
   const value = address.trim();
   if (!/^G[A-Z2-7]{55}$/.test(value)) {
-    throw new Error("Invalid Stellar public key");
+    throw new XPayError("INVALID_ADDRESS", "Invalid Stellar public key", 400);
   }
   return value;
+}
+
+function normalizeToken(token?: string): string {
+  const value = token?.trim() || DEFAULT_TOKEN;
+  if (!value) {
+    throw new XPayError("INVALID_TOKEN", "Token is required", 400);
+  }
+  return value.toUpperCase();
 }
 
 async function isMerchantWhitelisted(merchantAddress: string) {
   const { data, error } = await supabase
     .from("merchant_whitelist")
-    .select("active")
+    .select("active, merchant_name")
     .eq("merchant_address", merchantAddress)
     .maybeSingle<MerchantWhitelistRow>();
 
   if (error) {
-    throw new Error(`Failed to check merchant whitelist: ${error.message}`);
+    throw new XPayError("DB_ERROR", "Failed to check merchant whitelist", 500, {
+      cause: error.message,
+    });
   }
 
-  return Boolean(
-    data &&
-    (data.active === true || data.active === null || data.active === undefined),
-  );
+  return {
+    whitelisted: Boolean(
+      data &&
+      (data.active === true ||
+        data.active === null ||
+        data.active === undefined),
+    ),
+    merchantName: data?.merchant_name ?? null,
+  };
 }
 
 async function logTransaction(entry: TransactionInsert) {
@@ -135,25 +198,64 @@ async function logTransaction(entry: TransactionInsert) {
 
   const { error } = await supabase.from("transactions").insert(payload);
   if (error) {
-    throw new Error(`Failed to write transaction log: ${error.message}`);
+    throw new XPayError("DB_ERROR", "Failed to write transaction log", 500, {
+      cause: error.message,
+    });
+  }
+}
+
+async function incrementAgentSpend(params: {
+  userAddress: string;
+  amount: string;
+  token: string;
+}) {
+  const spendColumn = params.token === "USDC" ? "spent_usdc" : "spent_xlm";
+
+  const { data, error: fetchError } = await supabase
+    .from("agents")
+    .select("id, wallet_address, spent_xlm, spent_usdc")
+    .eq("wallet_address", params.userAddress)
+    .maybeSingle<AgentRow>();
+
+  if (fetchError) {
+    throw new XPayError("DB_ERROR", "Failed to fetch agent spend record", 500, {
+      cause: fetchError.message,
+    });
+  }
+
+  const currentSpentRaw = data?.[spendColumn as keyof AgentRow] ?? 0;
+  const currentSpent = Number(currentSpentRaw);
+  const nextSpent =
+    (Number.isFinite(currentSpent) ? currentSpent : 0) + Number(params.amount);
+
+  const { error: updateError } = await supabase
+    .from("agents")
+    .update({
+      [spendColumn]: nextSpent.toString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("wallet_address", params.userAddress);
+
+  if (updateError) {
+    throw new XPayError("DB_ERROR", "Failed to update agent spend total", 500, {
+      cause: updateError.message,
+    });
   }
 }
 
 async function getStellarInvocationClient() {
-  const rpcUrl =
-    process.env.STELLAR_RPC_URL ??
-    process.env.SOROBAN_RPC_URL ??
-    "https://soroban-testnet.stellar.org";
-
   const contractId =
     process.env.XPAY_GUARD_CONTRACT_ID ??
     networks.testnet.contractId ??
     DEFAULT_CONTRACT_ID;
 
   const agentSecretKey = process.env.AGENT_SECRET_KEY;
-
   if (!agentSecretKey) {
-    throw new Error("Missing AGENT_SECRET_KEY");
+    throw new XPayError(
+      "SERVER_MISCONFIGURED",
+      "Missing AGENT_SECRET_KEY",
+      500,
+    );
   }
 
   const agentKeypair = Keypair.fromSecret(agentSecretKey);
@@ -175,32 +277,49 @@ async function getStellarInvocationClient() {
 
   const client = new XpayGuardClient({
     contractId,
-    rpcUrl,
-    networkPassphrase: networks.testnet.networkPassphrase,
     publicKey: agentPublicKey,
+    networkPassphrase: networks.testnet.networkPassphrase,
     signTransaction,
     signAuthEntry,
-  });
+  } as unknown as ConstructorParameters<typeof XpayGuardClient>[0]);
 
-  return { client, rpcUrl, contractId, agentSecretKey, agentPublicKey };
+  return { client, contractId, agentPublicKey };
 }
 
-async function submitAssembledTransaction<T>(assembled: {
-  signAndSend: (opts?: {
-    force?: boolean;
-    signTransaction?: unknown;
-    watcher?: unknown;
-  }) => Promise<{ result: T; hash?: string }>;
-  result: T;
-}) {
-  const sent = await assembled.signAndSend({
-    force: true,
-  });
+type LooseAssembledTransaction = {
+  signAndSend: (opts?: unknown) => Promise<{ result: unknown; hash?: string }>;
+  result: unknown;
+};
 
-  return {
-    hash: sent.hash ?? null,
-    result: sent.result ?? assembled.result,
-  };
+async function submitAssembledTransaction<T>(
+  assembled: LooseAssembledTransaction,
+) {
+  try {
+    const sent = await assembled.signAndSend({ force: true } as never);
+
+    return {
+      hash: sent.hash ?? null,
+      result: (sent.result ?? assembled.result) as T,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Contract error";
+
+    if (/LimitExceeded/i.test(message)) {
+      throw new XPayError("LIMIT_EXCEEDED", "Daily limit exceeded", 409, {
+        raw: message,
+      });
+    }
+
+    if (/Insufficient/i.test(message)) {
+      throw new XPayError("INSUFFICIENT_ESCROW", "Insufficient escrow", 402, {
+        raw: message,
+      });
+    }
+
+    throw new XPayError("CONTRACT_ERROR", "Soroban transaction failed", 400, {
+      raw: message,
+    });
+  }
 }
 
 async function invokePayService(params: {
@@ -210,10 +329,10 @@ async function invokePayService(params: {
   txHash: string;
   userAddress: string;
 }) {
-  const { client, rpcUrl, contractId, agentPublicKey } =
+  const { client, contractId, agentPublicKey } =
     await getStellarInvocationClient();
 
-  const assembled = await client.pay_service(
+  const assembled = (await client.pay_service(
     {
       agent: agentPublicKey,
       user: params.userAddress,
@@ -224,7 +343,7 @@ async function invokePayService(params: {
       fee: "auto",
       timeoutInSeconds: 60,
     },
-  );
+  )) as unknown as LooseAssembledTransaction;
 
   const submitted = await submitAssembledTransaction(assembled);
 
@@ -236,7 +355,6 @@ async function invokePayService(params: {
     amount: params.amount,
     memo: params.memo ?? null,
     txHash: params.txHash,
-    rpcUrl,
     hash: submitted.hash,
   };
 }
@@ -249,10 +367,10 @@ async function invokeInitSession(params: {
   period: number;
   deadline: number;
 }) {
-  const { client, rpcUrl, contractId, agentPublicKey } =
+  const { client, contractId, agentPublicKey } =
     await getStellarInvocationClient();
 
-  const assembled = await client.init_session(
+  const assembled = (await client.init_session(
     {
       user: params.userAddress,
       agent: agentPublicKey,
@@ -266,7 +384,7 @@ async function invokeInitSession(params: {
       fee: "auto",
       timeoutInSeconds: 60,
     },
-  );
+  )) as unknown as LooseAssembledTransaction;
 
   const submitted = await submitAssembledTransaction(assembled);
 
@@ -274,7 +392,6 @@ async function invokeInitSession(params: {
     result: submitted.result,
     contractId,
     operator: agentPublicKey,
-    rpcUrl,
     hash: submitted.hash,
   };
 }
@@ -283,10 +400,10 @@ async function invokeClaimRefund(params: {
   userAddress: string;
   txHash: string;
 }) {
-  const { client, rpcUrl, contractId, agentPublicKey } =
+  const { client, contractId, agentPublicKey } =
     await getStellarInvocationClient();
 
-  const assembled = await client.claim_refund(
+  const assembled = (await client.claim_refund(
     {
       user: params.userAddress,
       agent: agentPublicKey,
@@ -295,7 +412,7 @@ async function invokeClaimRefund(params: {
       fee: "auto",
       timeoutInSeconds: 60,
     },
-  );
+  )) as unknown as LooseAssembledTransaction;
 
   const submitted = await submitAssembledTransaction(assembled);
 
@@ -303,179 +420,275 @@ async function invokeClaimRefund(params: {
     result: submitted.result,
     contractId,
     operator: agentPublicKey,
-    rpcUrl,
     txHash: params.txHash,
     hash: submitted.hash,
   };
 }
 
+function mapErrorToXPayError(error: unknown): XPayError {
+  if (error instanceof XPayError) {
+    return error;
+  }
+
+  const message = error instanceof Error ? error.message : "Unexpected failure";
+
+  if (/LimitExceeded/i.test(message)) {
+    return new XPayError("LIMIT_EXCEEDED", "Daily limit exceeded", 409, {
+      raw: message,
+    });
+  }
+
+  if (/Insufficient/i.test(message)) {
+    return new XPayError("INSUFFICIENT_ESCROW", "Insufficient escrow", 402, {
+      raw: message,
+    });
+  }
+
+  if (/whitelist/i.test(message)) {
+    return new XPayError(
+      "MERCHANT_NOT_WHITELISTED",
+      "Merchant is not whitelisted",
+      403,
+      { raw: message },
+    );
+  }
+
+  return new XPayError("CONTRACT_ERROR", message, 400);
+}
+
 export async function processTip(
   input: ProcessTipInput,
 ): Promise<ProcessTipResult> {
-  const merchantAddress = normalizeAddress(input.merchantAddress);
-  const amount = normalizeAmount(input.amount);
-  const txHash = input.txHash?.trim() || randomUUID();
-  const token = input.token?.trim() || DEFAULT_TOKEN;
-  const userAddress = input.userAddress
-    ? normalizeAddress(input.userAddress)
-    : "";
+  try {
+    const merchantAddress = normalizeAddress(input.merchantAddress);
+    const amount = normalizeAmount(input.amount);
+    const txHash = input.txHash?.trim() || randomUUID();
+    const token = normalizeToken(input.token);
+    const userAddress = input.userAddress
+      ? normalizeAddress(input.userAddress)
+      : "";
 
-  const whitelisted = await isMerchantWhitelisted(merchantAddress);
-  if (!whitelisted) {
+    const { whitelisted, merchantName } =
+      await isMerchantWhitelisted(merchantAddress);
+
+    if (!whitelisted) {
+      await logTransaction({
+        tx_hash: txHash,
+        status: "rejected",
+        type: "tip",
+        from_address: userAddress || null,
+        merchant_address: merchantAddress,
+        merchant_name: merchantName,
+        amount,
+        token,
+        contract_id: DEFAULT_CONTRACT_ID,
+        metadata: {
+          reason: "merchant_not_whitelisted",
+        },
+      });
+
+      throw new XPayError(
+        "MERCHANT_NOT_WHITELISTED",
+        "Merchant is not whitelisted",
+        403,
+      );
+    }
+
+    const invocation = await invokePayService({
+      amount,
+      merchantAddress,
+      memo: input.memo,
+      txHash,
+      userAddress: userAddress || merchantAddress,
+    });
+
     await logTransaction({
       tx_hash: txHash,
-      status: "rejected",
+      status: "success",
       type: "tip",
       from_address: userAddress || null,
       merchant_address: merchantAddress,
+      merchant_name: merchantName,
       amount,
       token,
-      contract_id: DEFAULT_CONTRACT_ID,
+      contract_id: invocation.contractId,
+      raw_response: invocation.result ?? invocation,
       metadata: {
-        reason: "merchant_not_whitelisted",
+        memo: input.memo ?? null,
+        agent_public_key: invocation.operator,
       },
     });
 
-    throw new Error("Merchant is not whitelisted");
+    if (userAddress) {
+      await incrementAgentSpend({
+        userAddress,
+        amount,
+        token,
+      });
+    }
+
+    return {
+      success: true,
+      txHash,
+      contractId: invocation.contractId,
+      merchantAddress,
+      merchantName,
+      amount,
+      token,
+      submissionHash: invocation.hash,
+      result: invocation.result ?? invocation,
+    };
+  } catch (error) {
+    const xpayError = mapErrorToXPayError(error);
+
+    // Ensure failures are also logged to the database for auditability
+    try {
+      // Re-normalize parameters for logging in case error happened late
+      const merchantAddress = normalizeAddress(input.merchantAddress);
+      const amount = normalizeAmount(input.amount);
+      const txHash = input.txHash?.trim() || "failed-" + randomUUID();
+      const token = normalizeToken(input.token);
+
+      await logTransaction({
+        tx_hash: txHash,
+        status: "failed",
+        type: "tip",
+        from_address: input.userAddress || null,
+        merchant_address: merchantAddress,
+        amount,
+        token,
+        contract_id: DEFAULT_CONTRACT_ID,
+        metadata: {
+          error_code: xpayError.code,
+          error_message: xpayError.message,
+          raw_error: error instanceof Error ? error.message : String(error),
+        },
+      }).catch((e) =>
+        console.error("Double failure: could not log failed tip:", e),
+      );
+    } catch (logInitError) {
+      console.error("Could not initialize log for failed tip:", logInitError);
+    }
+
+    throw xpayError;
   }
-
-  const invocation = await invokePayService({
-    amount,
-    merchantAddress,
-    memo: input.memo,
-    txHash,
-    userAddress: userAddress || merchantAddress,
-  });
-
-  await logTransaction({
-    tx_hash: txHash,
-    status: "success",
-    type: "tip",
-    from_address: userAddress || null,
-    merchant_address: merchantAddress,
-    amount,
-    token,
-    contract_id: invocation.contractId,
-    raw_response: invocation.result ?? invocation,
-    metadata: {
-      memo: input.memo ?? null,
-      agent_public_key: invocation.operator,
-      rpc_url: invocation.rpcUrl,
-    },
-  });
-
-  return {
-    success: true,
-    txHash,
-    contractId: invocation.contractId,
-    merchantAddress,
-    amount,
-    submissionHash: invocation.hash,
-    result: invocation.result ?? invocation,
-  };
 }
 
 export async function initSession(
   input: InitSessionInput,
 ): Promise<InitSessionResult> {
-  const userAddress = normalizeAddress(input.userAddress);
-  const token = input.token.trim();
-  const escrowAmount = normalizeAmount(input.escrowAmount);
-  const limit = normalizeAmount(input.limit);
+  try {
+    const userAddress = normalizeAddress(input.userAddress);
+    const token = normalizeToken(input.token);
+    const escrowAmount = normalizeAmount(input.escrowAmount);
+    const limit = normalizeAmount(input.limit);
 
-  if (!token) {
-    throw new Error("Token is required");
-  }
+    if (!Number.isInteger(input.period) || input.period <= 0) {
+      throw new XPayError(
+        "CONTRACT_ERROR",
+        "Period must be a positive integer",
+        400,
+      );
+    }
 
-  if (!Number.isInteger(input.period) || input.period <= 0) {
-    throw new Error("Period must be a positive integer");
-  }
+    if (!Number.isInteger(input.deadline) || input.deadline <= 0) {
+      throw new XPayError(
+        "CONTRACT_ERROR",
+        "Deadline must be a positive integer",
+        400,
+      );
+    }
 
-  if (!Number.isInteger(input.deadline) || input.deadline <= 0) {
-    throw new Error("Deadline must be a positive integer");
-  }
-
-  const invocation = await invokeInitSession({
-    userAddress,
-    token,
-    escrowAmount,
-    limit,
-    period: input.period,
-    deadline: input.deadline,
-  });
-
-  await logTransaction({
-    tx_hash: randomUUID(),
-    status: "success",
-    type: "init_session",
-    from_address: userAddress,
-    amount: escrowAmount,
-    token,
-    contract_id: invocation.contractId,
-    raw_response: invocation.result ?? invocation,
-    metadata: {
+    const invocation = await invokeInitSession({
+      userAddress,
+      token,
+      escrowAmount,
       limit,
       period: input.period,
       deadline: input.deadline,
-      agent_public_key: invocation.operator,
-      rpc_url: invocation.rpcUrl,
-    },
-  });
+    });
 
-  return {
-    success: true,
-    contractId: invocation.contractId,
-    userAddress,
-    token,
-    escrowAmount,
-    limit,
-    period: input.period,
-    deadline: input.deadline,
-    submissionHash: invocation.hash,
-    result: invocation.result ?? invocation,
-  };
+    await logTransaction({
+      tx_hash: randomUUID(),
+      status: "success",
+      type: "init_session",
+      from_address: userAddress,
+      amount: escrowAmount,
+      token,
+      contract_id: invocation.contractId,
+      raw_response: invocation.result ?? invocation,
+      metadata: {
+        limit,
+        period: input.period,
+        deadline: input.deadline,
+        agent_public_key: invocation.operator,
+      },
+    });
+
+    return {
+      success: true,
+      contractId: invocation.contractId,
+      userAddress,
+      token,
+      escrowAmount,
+      limit,
+      period: input.period,
+      deadline: input.deadline,
+      submissionHash: invocation.hash,
+      result: invocation.result ?? invocation,
+    };
+  } catch (error) {
+    throw mapErrorToXPayError(error);
+  }
 }
 
 export async function claimRefund(
   input: ClaimRefundInput,
 ): Promise<ClaimRefundResult> {
-  const userAddress = normalizeAddress(input.userAddress);
-  const txHash = input.txHash?.trim() || randomUUID();
+  try {
+    const userAddress = normalizeAddress(input.userAddress);
+    const txHash = input.txHash?.trim() || randomUUID();
 
-  const invocation = await invokeClaimRefund({
-    userAddress,
-    txHash,
-  });
+    const invocation = await invokeClaimRefund({
+      userAddress,
+      txHash,
+    });
 
-  await logTransaction({
-    tx_hash: txHash,
-    status: "success",
-    type: "claim_refund",
-    from_address: userAddress,
-    contract_id: invocation.contractId,
-    raw_response: invocation.result ?? invocation,
-    metadata: {
-      agent_public_key: invocation.operator,
-      rpc_url: invocation.rpcUrl,
-    },
-  });
+    await logTransaction({
+      tx_hash: txHash,
+      status: "success",
+      type: "claim_refund",
+      from_address: userAddress,
+      contract_id: invocation.contractId,
+      raw_response: invocation.result ?? invocation,
+      metadata: {
+        agent_public_key: invocation.operator,
+      },
+    });
 
-  return {
-    success: true,
-    contractId: invocation.contractId,
-    userAddress,
-    txHash,
-    submissionHash: invocation.hash,
-    result: invocation.result ?? invocation,
-  };
+    return {
+      success: true,
+      contractId: invocation.contractId,
+      userAddress,
+      txHash,
+      submissionHash: invocation.hash,
+      result: invocation.result ?? invocation,
+    };
+  } catch (error) {
+    throw mapErrorToXPayError(error);
+  }
 }
 
-export function x402Required(message = "This endpoint requires payment") {
+export function x402Required(
+  message = "This endpoint requires payment",
+  required?: PaymentRequiredResult["required"],
+) {
   return {
     success: false as const,
     status: 402 as const,
     error: "Payment Required" as const,
     message,
+    ...(required ? { required } : {}),
   };
 }
 

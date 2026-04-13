@@ -1,0 +1,28 @@
+meta {
+  name: Verify Signature
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/auth/verify
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Accept: application/json
+}
+
+body:json {
+  {
+    "address": "GD2KKYYXJL2PFPD4GENECHBUJT5FZ6ARKLUIVGUXBL5F4NAZUWCYNQNB",
+    "signedMessage": "REPLACE_WITH_FREIGHTER_SIGNED_MESSAGE",
+    "nonce": "REPLACE_WITH_NONCE_FROM_GET_NONCE"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import authRoutes from "./routes/auth.routes";
 import agentRoutes from "./routes/agent.routes";
+import { jwtGuard } from "./middleware/jwt.middleware";
 
 const app = new Hono();
 
@@ -46,4 +47,11 @@ app.route("/user", userRoutes);
  */
 app.route("/agent", agentRoutes);
 
-export default app;
+const port = 8080;
+
+console.log(`xPay API listening on http://localhost:${port}`);
+
+export default {
+  port,
+  fetch: app.fetch,
+};

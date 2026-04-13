@@ -3,6 +3,7 @@ import {
   claimRefund as claimRefundService,
   initSession as initSessionService,
   processTip,
+  XPayError,
 } from "../services/agent.service";
 import { x402Required } from "../middleware/x402.middleware";
 
@@ -26,18 +27,74 @@ type RefundRequestBody = {
   txHash?: string;
 };
 
-function getJwtAddress(c: Context) {
-  const payload = c.get("jwtPayload");
-  return payload.address ?? "";
+type MachineReadableError = {
+  success: false;
+  error: string;
+  message: string;
+  details?: unknown;
+};
+
+type StatusCode = 400 | 401 | 402 | 403 | 409 | 500;
+
+function getJwtAddress(c: Context): string {
+  const payload = c.get("jwtPayload") as
+    | {
+        address?: unknown;
+        wallet_address?: unknown;
+      }
+    | undefined;
+
+  if (typeof payload?.address === "string") return payload.address;
+  if (typeof payload?.wallet_address === "string")
+    return payload.wallet_address;
+  return "";
 }
 
+function jsonError(
+  error: string,
+  message: string,
+  status: StatusCode,
+  details?: unknown,
+): { body: MachineReadableError; status: StatusCode } {
+  const body: MachineReadableError = {
+    success: false,
+    error,
+    message,
+    ...(details !== undefined ? { details } : {}),
+  };
+
+  return { body, status };
+}
+
+function handleXPayError(error: unknown): {
+  body: MachineReadableError;
+  status: StatusCode;
+} {
+  if (error instanceof XPayError) {
+    return jsonError(
+      error.code,
+      error.message,
+      error.status as StatusCode,
+      error.details,
+    );
+  }
+
+  const message =
+    error instanceof Error ? error.message : "Request processing failed";
+
+  return jsonError("CONTRACT_ERROR", message, 400);
+}
+
+/**
+ * POST /agent/tip
+ */
 export const tip = async (c: Context) => {
   const body = (await c.req.json().catch(() => null)) as TipRequestBody | null;
   const userAddress = getJwtAddress(c);
 
   if (!body?.txHash) {
     return c.json(
-      x402Required("This endpoint requires a valid transaction hash.", {
+      x402Required(c, "This endpoint requires a valid transaction hash.", {
         txHash: true,
       }),
       402,
@@ -45,11 +102,17 @@ export const tip = async (c: Context) => {
   }
 
   if (!body?.merchantAddress) {
-    return c.json({ error: "merchantAddress is required" }, 400);
+    const err = jsonError("BAD_REQUEST", "merchantAddress is required", 400, {
+      field: "merchantAddress",
+    });
+    return c.json(err.body, err.status);
   }
 
   if (body.amount === undefined || body.amount === null) {
-    return c.json({ error: "amount is required" }, 400);
+    const err = jsonError("BAD_REQUEST", "amount is required", 400, {
+      field: "amount",
+    });
+    return c.json(err.body, err.status);
   }
 
   try {
@@ -62,15 +125,16 @@ export const tip = async (c: Context) => {
       userAddress,
     });
 
-    return c.json(result);
+    return c.json(result, 200);
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Tip processing failed";
-
-    return c.json({ error: message }, 400);
+    const mapped = handleXPayError(error);
+    return c.json(mapped.body, mapped.status);
   }
 };
 
+/**
+ * POST /agent/init-session
+ */
 export const initSession = async (c: Context) => {
   const body = (await c.req
     .json()
@@ -78,15 +142,30 @@ export const initSession = async (c: Context) => {
   const userAddress = getJwtAddress(c);
 
   if (!body?.token) {
-    return c.json({ error: "token is required" }, 400);
+    const err = jsonError("BAD_REQUEST", "token is required", 400, {
+      field: "token",
+    });
+    return c.json(err.body, err.status);
   }
 
   if (body.escrowAmount === undefined || body.limit === undefined) {
-    return c.json({ error: "escrowAmount and limit are required" }, 400);
+    const err = jsonError(
+      "BAD_REQUEST",
+      "escrowAmount and limit are required",
+      400,
+      { fields: ["escrowAmount", "limit"] },
+    );
+    return c.json(err.body, err.status);
   }
 
   if (body.period === undefined || body.deadline === undefined) {
-    return c.json({ error: "period and deadline are required" }, 400);
+    const err = jsonError(
+      "BAD_REQUEST",
+      "period and deadline are required",
+      400,
+      { fields: ["period", "deadline"] },
+    );
+    return c.json(err.body, err.status);
   }
 
   try {
@@ -99,15 +178,16 @@ export const initSession = async (c: Context) => {
       deadline: body.deadline,
     });
 
-    return c.json(result);
+    return c.json(result, 200);
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Session initialization failed";
-
-    return c.json({ error: message }, 400);
+    const mapped = handleXPayError(error);
+    return c.json(mapped.body, mapped.status);
   }
 };
 
+/**
+ * POST /agent/claim-refund
+ */
 export const claimRefund = async (c: Context) => {
   const body = (await c.req
     .json()
@@ -116,7 +196,7 @@ export const claimRefund = async (c: Context) => {
 
   if (!body?.txHash) {
     return c.json(
-      x402Required("This endpoint requires a valid transaction hash.", {
+      x402Required(c, "This endpoint requires a valid transaction hash.", {
         txHash: true,
       }),
       402,
@@ -129,11 +209,9 @@ export const claimRefund = async (c: Context) => {
       txHash: body.txHash,
     });
 
-    return c.json(result);
+    return c.json(result, 200);
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Refund claim failed";
-
-    return c.json({ error: message }, 400);
+    const mapped = handleXPayError(error);
+    return c.json(mapped.body, mapped.status);
   }
 };

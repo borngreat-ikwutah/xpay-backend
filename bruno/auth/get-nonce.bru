@@ -1,0 +1,23 @@
+meta {
+  name: Get Nonce
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/auth/nonce?address=GD2KKYYXJL2PFPD4GENECHBUJT5FZ6ARKLUIVGUXBL5F4NAZUWCYNQNB
+  body: none
+  auth: none
+}
+
+params:query {
+  address: GD2KKYYXJL2PFPD4GENECHBUJT5FZ6ARKLUIVGUXBL5F4NAZUWCYNQNB
+}
+
+headers {
+  Accept: application/json
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
