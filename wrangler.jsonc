@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "xpay-backend",
   "main": "src/index.ts",
-  "compatibility_date": "2026-04-22"
+  "compatibility_date": "2026-04-22",
   // "compatibility_flags": [
   //   "nodejs_compat"
   // ],
@@ -21,13 +21,13 @@
   //     "bucket_name": "my-bucket"
   //   }
   // ],
-  // "d1_databases": [
-  //   {
-  //     "binding": "MY_DB",
-  //     "database_name": "my-database",
-  //     "database_id": ""
-  //   }
-  // ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "xpay-db",
+      "database_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    },
+  ],
   // "ai": {
   //   "binding": "AI"
   // },

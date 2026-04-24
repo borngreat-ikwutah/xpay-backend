@@ -6,21 +6,16 @@
 import "hardhat/types/artifacts";
 import type { GetContractReturnType } from "@nomicfoundation/hardhat-viem/types";
 
-import { IERC7857$Type } from "./IERC7857";
 import { xPayVault$Type } from "./xPayVault";
 
 declare module "hardhat/types/artifacts" {
   interface ArtifactsMap {
-    ["IERC7857"]: IERC7857$Type;
     ["xPayVault"]: xPayVault$Type;
-    ["contracts/xPayVault.sol:IERC7857"]: IERC7857$Type;
     ["contracts/xPayVault.sol:xPayVault"]: xPayVault$Type;
   }
 
   interface ContractTypesMap {
-    ["IERC7857"]: GetContractReturnType<IERC7857$Type["abi"]>;
     ["xPayVault"]: GetContractReturnType<xPayVault$Type["abi"]>;
-    ["contracts/xPayVault.sol:IERC7857"]: GetContractReturnType<IERC7857$Type["abi"]>;
     ["contracts/xPayVault.sol:xPayVault"]: GetContractReturnType<xPayVault$Type["abi"]>;
   }
 }

@@ -3,92 +3,220 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-
-/**
- * @title IERC7857
- * @notice Interface for 0G Agent ID Registry (ERC-7857).
- * ERC-7857 defines the technical standard for Intelligent NFTs (iNFTs).
- */
-interface IERC7857 {
-    function ownerOf(uint256 tokenId) external view returns (address owner);
-}
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@account-abstraction/contracts/interfaces/IAccount.sol";
+import "@account-abstraction/contracts/interfaces/IEntryPoint.sol";
 
 /**
  * @title xPayVault
- * @notice Logic for a consumer-facing AI agent wallet on 0G Chain.
- * @dev This contract acts as a Policy-Driven Escrow, enforcing budgetary guardrails
- * and anchoring transaction receipts to 0G Storage.
+ * @notice An ERC-4337 Smart Account for AI Agent micro-payments.
+ * @dev Implements:
+ * 1. Account Abstraction (ERC-4337): Programmable sovereignty and gas abstraction.
+ * 2. Agent Spend Mandates: Session keys for AI agents with strict guardrails.
+ * 3. Pre-paid Escrow: Holds USDC/$0G for automated settlement.
+ * 4. Machine-to-Machine (M2M) Pull Payments: Providers pull funds via cryptographic agent proof.
  */
-contract xPayVault is Ownable, ReentrancyGuard {
-    // 0G Agent ID Registry (ERC-7857) Address
-    address public agentRegistry;
+contract xPayVault is IAccount, Ownable, ReentrancyGuard {
+    using ECDSA for bytes32;
+    using MessageHashUtils for bytes32;
 
-    struct SpendPolicy {
-        uint256 dailyLimit; // Max spend per 24 hours
-        uint256 currentDaySpend; // Amount spent in current window
-        uint256 lastResetTime; // Timestamp of last limit reset
-        uint256 transactionCap; // Max amount per single transaction if vendor is not whitelisted
-        bool isRestricted; // Kill-switch for this agent
+    // --- State Variables ---
+
+    IEntryPoint public immutable entryPoint;
+    address public agentRegistry; // ERC-7857 iNFT Registry
+    IERC20 public settlementToken; // The currency used for payments (e.g., USDC)
+
+    struct Session {
+        address agentSignerKey; // The temporary key used by the AI agent
+        uint256 expiresAt; // Time-bound session expiry
+        uint256 maxSpendLimit; // Total budget for this session
+        uint256 currentSpend; // Amount already spent
+        bool isRevoked; // Immediate kill-switch
     }
 
-    mapping(uint256 => SpendPolicy) public agentPolicies; // AgentID => Rules
-    mapping(address => bool) public verifiedVendors; // Whitelist for high-trust APIs
+    // Mapping from Agent ID to their active Session
+    mapping(uint256 => Session) public agentSessions;
 
+    // Mapping for verified vendors (0G Compute/Storage nodes)
+    mapping(address => bool) public verifiedVendors;
+
+    // --- Events ---
+
+    event SessionAuthorized(
+        uint256 indexed agentId,
+        address agentKey,
+        uint256 limit,
+        uint256 expiry
+    );
+    event SessionRevoked(uint256 indexed agentId);
     event AgentPaymentExecuted(
         uint256 indexed agentId,
         address indexed vendor,
         uint256 amount,
         bytes32 storageRoot
     );
-
-    event PolicyUpdated(
-        uint256 indexed agentId,
-        uint256 dailyLimit,
-        uint256 transactionCap
-    );
     event VendorWhitelisted(address indexed vendor, bool status);
-    event AgentRestricted(uint256 indexed agentId, bool status);
 
-    /**
-     * @dev Sets the initial owner and agent registry.
-     * @param _agentRegistry The address of the ERC-7857 registry on 0G Chain.
-     */
-    constructor(address _agentRegistry) Ownable(msg.sender) {
+    // --- Modifiers ---
+
+    modifier onlyEntryPoint() {
+        require(msg.sender == address(entryPoint), "Caller is not EntryPoint");
+        _;
+    }
+
+    constructor(
+        IEntryPoint _entryPoint,
+        address _agentRegistry,
+        IERC20 _settlementToken
+    ) Ownable(msg.sender) {
+        entryPoint = _entryPoint;
         agentRegistry = _agentRegistry;
+        settlementToken = _settlementToken;
     }
 
+    // --- ERC-4337: Account Abstraction Functions ---
+
     /**
-     * @dev Sets or updates the spend policy for a specific agent.
-     * Can only be called by the vault owner to define guardrails for their AI.
+     * @dev Validates the signature for a UserOperation.
+     * This allows the EntryPoint to execute transactions on behalf of this wallet.
+     * It enables gas abstraction (paying for gas in tokens via a paymaster).
      */
-    function setAgentPolicy(
-        uint256 agentId,
-        uint256 dailyLimit,
-        uint256 transactionCap
-    ) external onlyOwner {
-        SpendPolicy storage policy = agentPolicies[agentId];
-        policy.dailyLimit = dailyLimit;
-        policy.transactionCap = transactionCap;
-        if (policy.lastResetTime == 0) {
-            policy.lastResetTime = block.timestamp;
+    function validateUserOp(
+        PackedUserOperation calldata userOp,
+        bytes32 userOpHash,
+        uint256 missingAccountFunds
+    ) external override onlyEntryPoint returns (uint256 validationData) {
+        // Validate signature
+        // For simplicity, we only allow the owner to sign UserOperations directly.
+        // Agents use the 'claimM2MPayment' flow or specialized session execution.
+        if (
+            owner() !=
+            userOpHash.toEthSignedMessageHash().recover(userOp.signature)
+        ) {
+            return 1; // SIG_VALIDATION_FAILED
         }
-        emit PolicyUpdated(agentId, dailyLimit, transactionCap);
+
+        // Prefund the EntryPoint if required
+        if (missingAccountFunds > 0) {
+            (bool success, ) = payable(msg.sender).call{
+                value: missingAccountFunds,
+                gas: type(uint256).max
+            }("");
+            (success);
+        }
+
+        return 0; // SUCCESS
     }
 
     /**
-     * @dev Toggles the restriction state (kill-switch) for an agent.
+     * @dev Generic execution function for the EntryPoint.
      */
-    function setAgentRestriction(
+    function execute(
+        address dest,
+        uint256 value,
+        bytes calldata func
+    ) external onlyEntryPoint {
+        (bool success, bytes memory result) = dest.call{value: value}(func);
+        if (!success) {
+            assembly {
+                revert(add(result, 32), mload(result))
+            }
+        }
+    }
+
+    // --- Agent Spend Mandates (The Guardrail) ---
+
+    /**
+     * @notice Authorizes a temporary Session Key for an AI Agent.
+     * @param agentId The unique ID of the agent (ERC-7857).
+     * @param agentKey The temporary public key provided by the AI agent.
+     * @param limit Maximum amount of settlementToken the agent can authorize.
+     * @param duration How many seconds the session is valid (e.g., 86400 for 24h).
+     */
+    function authorizeSession(
         uint256 agentId,
-        bool status
+        address agentKey,
+        uint256 limit,
+        uint256 duration
     ) external onlyOwner {
-        agentPolicies[agentId].isRestricted = status;
-        emit AgentRestricted(agentId, status);
+        agentSessions[agentId] = Session({
+            agentSignerKey: agentKey,
+            expiresAt: block.timestamp + duration,
+            maxSpendLimit: limit,
+            currentSpend: 0,
+            isRevoked: false
+        });
+        emit SessionAuthorized(
+            agentId,
+            agentKey,
+            limit,
+            block.timestamp + duration
+        );
     }
 
     /**
-     * @dev Whitelists or removes a high-trust vendor.
+     * @notice Instantly revokes an agent's access to the wallet.
      */
+    function revokeSession(uint256 agentId) external onlyOwner {
+        agentSessions[agentId].isRevoked = true;
+        emit SessionRevoked(agentId);
+    }
+
+    // --- Machine-to-Machine (x402) Pull Payments ---
+
+    /**
+     * @notice Allows a service provider (vendor) to pull payment from the vault.
+     * @dev Requires a cryptographic proof (signature) from the authorized AI Agent.
+     * @param agentId The ID of the agent that authorized the spend.
+     * @param amount The amount of tokens to pull.
+     * @param storageRoot The Merkle Root of the work/logs on 0G Storage.
+     * @param signature The signature from the Agent's Session Key.
+     */
+    function claimM2MPayment(
+        uint256 agentId,
+        uint256 amount,
+        bytes32 storageRoot,
+        bytes calldata signature
+    ) external nonReentrant {
+        Session storage session = agentSessions[agentId];
+
+        // 1. Guardrail Checks
+        require(!session.isRevoked, "Session revoked");
+        require(block.timestamp <= session.expiresAt, "Session expired");
+        require(
+            session.currentSpend + amount <= session.maxSpendLimit,
+            "Budget exceeded"
+        );
+
+        // 2. Cryptographic Proof Verification (Machine-to-Machine)
+        // The hash includes the contract address to prevent replay attacks across different wallets.
+        bytes32 messageHash = keccak256(
+            abi.encodePacked(address(this), agentId, amount, storageRoot)
+        );
+        address signer = messageHash.toEthSignedMessageHash().recover(
+            signature
+        );
+
+        require(signer == session.agentSignerKey, "Invalid agent signature");
+
+        // 3. Update Session State
+        session.currentSpend += amount;
+
+        // 4. Token Settlement (Pull Payment)
+        require(
+            settlementToken.transfer(msg.sender, amount),
+            "Token transfer failed"
+        );
+
+        // 5. 0G Storage Commitment
+        // We log the storageRoot as a permanent proof of the task the payment was for.
+        emit AgentPaymentExecuted(agentId, msg.sender, amount, storageRoot);
+    }
+
+    // --- Management Functions ---
+
     function setVendorWhitelist(
         address vendor,
         bool status
@@ -97,86 +225,25 @@ contract xPayVault is Ownable, ReentrancyGuard {
         emit VendorWhitelisted(vendor, status);
     }
 
-    /**
-     * @dev Updates the Agent Registry address if needed.
-     */
-    function setAgentRegistry(address _agentRegistry) external onlyOwner {
-        agentRegistry = _agentRegistry;
+    function setSettlementToken(IERC20 _token) external onlyOwner {
+        settlementToken = _token;
     }
 
     /**
-     * @dev Called by the Hono.js backend or the Agent directly to execute a payment.
-     * @param agentId The unique 0G Agent ID (iNFT).
-     * @param vendor The address of the paywall/API provider.
-     * @param storageRoot The hash of the content metadata saved to 0G Storage.
-     *
-     * Requirement:
-     * - The caller must be the owner of the Agent ID (Identity Verification).
-     * - The agent must not be restricted.
-     * - The payment must fall within the dailyLimit and transactionCap (Budgetary Guardrails).
-     */
-    function requestAgentPayment(
-        uint256 agentId,
-        address vendor,
-        uint256 amount,
-        bytes32 storageRoot
-    ) external nonReentrant {
-        SpendPolicy storage policy = agentPolicies[agentId];
-
-        // 0. Preliminary Check: Agent Status
-        require(!policy.isRestricted, "Agent is restricted");
-
-        // 1. Identity Verification via 0G Registry (ERC-7857)
-        // Ensure the person asking the vault to pay is actually the owner of the Agent iNFT.
-        require(
-            IERC7857(agentRegistry).ownerOf(agentId) == msg.sender,
-            "Unauthorized: Agent ID not owned by sender"
-        );
-
-        // 2. Budgetary Guardrails: Reset Daily Spend if window has passed
-        if (block.timestamp >= policy.lastResetTime + 1 days) {
-            policy.currentDaySpend = 0;
-            policy.lastResetTime = block.timestamp;
-        }
-
-        // 3. Budgetary Guardrails: Enforce Transaction Cap for non-whitelisted vendors
-        if (!verifiedVendors[vendor]) {
-            require(
-                amount <= policy.transactionCap,
-                "Amount exceeds transaction cap for non-verified vendor"
-            );
-        }
-
-        // 4. Budgetary Guardrails: Enforce Daily Limit
-        require(
-            policy.currentDaySpend + amount <= policy.dailyLimit,
-            "Daily spend limit exceeded"
-        );
-
-        // 5. Secure Payment Execution
-        policy.currentDaySpend += amount;
-
-        (bool success, ) = payable(vendor).call{value: amount}("");
-        require(success, "Payment transfer failed");
-
-        // 6. 0G Storage Anchoring: Permanent Receipt in Agent Memory
-        emit AgentPaymentExecuted(agentId, vendor, amount, storageRoot);
-    }
-
-    /**
-     * @dev Allows the owner to deposit native funds into the vault for agent use.
+     * @dev Allows the owner to deposit native funds (if needed for gas) or ERC20 tokens.
      */
     function deposit() external payable {}
 
-    /**
-     * @dev Fallback to receive funds.
-     */
     receive() external payable {}
 
     /**
      * @dev Emergency withdrawal for the vault owner.
      */
-    function withdraw(uint256 amount) external onlyOwner {
-        payable(msg.sender).transfer(amount);
+    function withdraw(address token, uint256 amount) external onlyOwner {
+        if (token == address(0)) {
+            payable(msg.sender).transfer(amount);
+        } else {
+            IERC20(token).transfer(msg.sender, amount);
+        }
     }
 }

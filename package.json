@@ -4,13 +4,18 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
-    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "wrangler d1 migrations apply xpay-db --local"
   },
   "dependencies": {
+    "@account-abstraction/contracts": "^0.8.0",
     "@openzeppelin/contracts": "^5.6.1",
+    "drizzle-orm": "^0.45.2",
     "hono": "^4.12.14"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260423.1",
     "@nomicfoundation/hardhat-ignition": "^0.15.0",
     "@nomicfoundation/hardhat-ignition-viem": "^0.15.0",
     "@nomicfoundation/hardhat-network-helpers": "^1.0.0",
@@ -23,6 +28,8 @@
     "@types/mocha": ">=9.1.0",
     "@types/node": ">=22.0.0",
     "chai": "^4.2.0",
+    "dotenv": "^17.4.2",
+    "drizzle-kit": "^0.31.10",
     "hardhat": "^2.14.0",
     "hardhat-gas-reporter": "^2.3.0",
     "solidity-coverage": "^0.8.0",
