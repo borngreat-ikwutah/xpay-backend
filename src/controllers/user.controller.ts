@@ -1,6 +1,6 @@
-import { Context } from 'hono';
-import { UserModel } from '../models/user.model';
-import { Bindings } from '../types';
+import { Context } from "hono";
+import { UserModel } from "../models/user.model";
+import { Bindings } from "../types";
 
 export class UserController {
   static async getUsers(c: Context<{ Bindings: Bindings }>) {
@@ -18,7 +18,7 @@ export class UserController {
         address: body.address,
         name: body.name,
       });
-      return c.json({ message: 'User created' }, 201);
+      return c.json({ message: "User created" }, 201);
     } catch (error: any) {
       return c.json({ error: error.message }, 400);
     }
