@@ -6,9 +6,12 @@
   // "compatibility_flags": [
   //   "nodejs_compat"
   // ],
-  // "vars": {
-  //   "MY_VAR": "my-variable"
-  // },
+  "vars": {
+    "ZG_EVM_RPC": "https://evmrpc-testnet.0g.ai",
+    "ZG_STORAGE_INDEXER_RPC": "https://indexer-storage-testnet-turbo.0g.ai",
+    "BASE_RPC_URL": "https://sepolia.base.org",
+    "VENDOR_PRIVATE_KEY": "0x0000000000000000000000000000000000000000000000000000000000000000"
+  },
   // "kv_namespaces": [
   //   {
   //     "binding": "MY_KV_NAMESPACE",
@@ -26,13 +29,7 @@
       "binding": "DB",
       "database_name": "xpay-db",
       "database_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    },
-  ],
-  // "ai": {
-  //   "binding": "AI"
-  // },
-  // "observability": {
-  //   "enabled": true,
-  //   "head_sampling_rate": 1
-  // }
+      "migrations_dir": "drizzle"
+    }
+  ]
 }

@@ -9,5 +9,6 @@
     "jsx": "react-jsx",
     "jsxImportSource": "hono/jsx",
     "types": ["@cloudflare/workers-types", "hardhat"],
+    "resolveJsonModule": true
   },
 }

@@ -9,6 +9,7 @@
     "db:migrate": "wrangler d1 migrations apply xpay-db --local"
   },
   "dependencies": {
+    "@0gfoundation/0g-storage-ts-sdk": "^1.2.8",
     "@account-abstraction/contracts": "^0.8.0",
     "@openzeppelin/contracts": "^5.6.1",
     "drizzle-orm": "^0.45.2",
@@ -35,6 +36,6 @@
     "solidity-coverage": "^0.8.0",
     "ts-node": ">=8.0.0",
     "typescript": "~5.0.4",
-    "viem": "^2.47.6"
+    "viem": "^2.48.8"
   }
 }
