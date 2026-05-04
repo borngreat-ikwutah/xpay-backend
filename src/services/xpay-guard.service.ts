@@ -1,8 +1,29 @@
-import { createPublicClient, createWalletClient, http, parseUnits, Hex } from 'viem';
-import { baseSepolia } from 'viem/chains';
+import { createPublicClient, createWalletClient, http, parseUnits, Hex, defineChain } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { Bindings } from '../types';
 import xPayVaultArtifact from '../abi/xpay-contract.json';
+
+export const zeroGGalileo = defineChain({
+  id: 16602,
+  name: '0G-Galileo-Testnet',
+  nativeCurrency: {
+    decimals: 18,
+    name: '0G',
+    symbol: '0G',
+  },
+  rpcUrls: {
+    default: {
+      http: ['https://evmrpc-testnet.0g.ai'],
+    },
+  },
+  blockExplorers: {
+    default: {
+      name: '0G BlockChain Explorer',
+      url: 'https://chainscan-galileo.0g.ai',
+    },
+  },
+  testnet: true,
+})
 
 const XPAY_VAULT_ABI = xPayVaultArtifact.abi;
 
@@ -12,18 +33,18 @@ export class XPayGuardService {
   private account;
 
   constructor(env: Bindings) {
-    const rpcUrl = env.BASE_RPC_URL || "https://sepolia.base.org";
+    const rpcUrl = env.ZG_EVM_RPC || "https://evmrpc-testnet.0g.ai";
     const pKey = env.VENDOR_PRIVATE_KEY as Hex;
 
     this.account = privateKeyToAccount(pKey);
     this.publicClient = createPublicClient({
-      chain: baseSepolia,
+      chain: zeroGGalileo,
       transport: http(rpcUrl),
     });
 
     this.walletClient = createWalletClient({
       account: this.account,
-      chain: baseSepolia,
+      chain: zeroGGalileo,
       transport: http(rpcUrl),
     });
   }

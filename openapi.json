@@ -1,0 +1,146 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "xPay Backend API",
+    "description": "Automated Financial Agency for AI-driven micro-payments and identity.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8787",
+      "description": "Local Development Server"
+    },
+    {
+      "url": "https://xpay-backend.workers.dev",
+      "description": "Production Server (Cloudflare Workers)"
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "summary": "Health Check",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "example": "xPay Backend API - Automated Financial Agency"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users": {
+      "get": {
+        "summary": "Get all users",
+        "description": "Returns a list of all registered users in the system.",
+        "responses": {
+          "200": {
+            "description": "A list of users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/User"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a new user",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "address": { "type": "string", "example": "0x123..." },
+                  "name": { "type": "string", "example": "John Doe" }
+                },
+                "required": ["address"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "User created"
+          },
+          "400": {
+            "description": "Invalid request"
+          }
+        }
+      }
+    },
+    "/agency/trigger": {
+      "post": {
+        "summary": "Trigger Autonomous Execution",
+        "description": "Triggers an AI agent execution, verifies policies, anchors to 0G Storage, and settles on 0G Network.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "agentId": { "type": "integer", "example": 1 },
+                  "eventType": { "type": "string", "example": "TIPPING" },
+                  "vendorAddress": { "type": "string", "example": "0x456..." },
+                  "amount": { "type": "number", "example": 1.5 },
+                  "signature": { "type": "string", "example": "0xabc..." },
+                  "vaultAddress": { "type": "string", "example": "0x789..." }
+                },
+                "required": ["agentId", "eventType", "vendorAddress", "amount", "signature", "vaultAddress"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Execution successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": { "type": "string" },
+                    "txHash": { "type": "string" },
+                    "storageRoot": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Policy violation"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "address": { "type": "string" },
+          "name": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  }
+}
