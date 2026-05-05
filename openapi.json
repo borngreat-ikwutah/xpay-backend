@@ -81,6 +81,85 @@
         }
       }
     },
+    "/users/nonce": {
+      "get": {
+        "summary": "Request a nonce for authentication",
+        "description": "Generates a unique nonce for the given wallet address to be signed by the user.",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "0x123..."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Nonce generated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "nonce": { "type": "string", "example": "Sign this message to verify your identity: ..." }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Address is required"
+          }
+        }
+      }
+    },
+    "/users/verify": {
+      "post": {
+        "summary": "Verify wallet signature",
+        "description": "Verifies a cryptographic signature against the stored nonce for a wallet address.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "address": { "type": "string", "example": "0x123..." },
+                  "signature": { "type": "string", "example": "0xabc..." }
+                },
+                "required": ["address", "signature"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signature verified",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": { "type": "string", "example": "Verified" },
+                    "verified": { "type": "boolean", "example": true },
+                    "user": { "$ref": "#/components/schemas/User" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid signature"
+          },
+          "400": {
+            "description": "Invalid request"
+          }
+        }
+      }
+    },
     "/agency/trigger": {
       "post": {
         "summary": "Trigger Autonomous Execution",
@@ -138,6 +217,7 @@
           "id": { "type": "integer" },
           "address": { "type": "string" },
           "name": { "type": "string" },
+          "nonce": { "type": "string" },
           "createdAt": { "type": "string", "format": "date-time" }
         }
       }

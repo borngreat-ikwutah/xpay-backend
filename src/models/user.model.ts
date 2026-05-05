@@ -34,4 +34,12 @@ export class UserModel {
   async create(data: NewUser): Promise<void> {
     await this.db.insert(users).values(data).run();
   }
+
+  async updateNonce(address: string, nonce: string): Promise<void> {
+    await this.db
+      .update(users)
+      .set({ nonce })
+      .where(eq(users.address, address))
+      .run();
+  }
 }

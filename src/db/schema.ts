@@ -5,6 +5,7 @@ export const users = sqliteTable('users', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   address: text('address').notNull().unique(), // User's main wallet/identity
   name: text('name'),
+  nonce: text('nonce'),
   createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
 });
 

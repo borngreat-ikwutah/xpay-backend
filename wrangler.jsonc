@@ -2,15 +2,13 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "xpay-backend",
   "main": "src/index.ts",
-  "compatibility_date": "2026-04-22",
-  // "compatibility_flags": [
-  //   "nodejs_compat"
-  // ],
+  "compatibility_date": "2026-04-28",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "vars": {
     "ZG_EVM_RPC": "https://evmrpc-testnet.0g.ai",
-    "ZG_STORAGE_INDEXER_RPC": "https://indexer-storage-testnet-turbo.0g.ai",
-    "BASE_RPC_URL": "https://sepolia.base.org",
-    "VENDOR_PRIVATE_KEY": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    "ZG_STORAGE_INDEXER_RPC": "https://indexer-storage-testnet-turbo.0g.ai"
   },
   // "kv_namespaces": [
   //   {
